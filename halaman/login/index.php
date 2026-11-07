@@ -10,9 +10,8 @@ if (session_status() !== PHP_SESSION_ACTIVE) {
 
 $error = '';
 
-
 // ========================================
-// MULAI LOGIN GOOGLE
+// PROSES LOGIN GOOGLE
 // ========================================
 
 if (
@@ -29,7 +28,6 @@ if (
     exit;
 }
 
-
 // ========================================
 // CALLBACK GOOGLE
 // ========================================
@@ -43,11 +41,11 @@ if (isset($_GET['code'])) {
         empty($savedState) ||
         !hash_equals($savedState, $returnedState)
     ) {
-        $error = 'Verifikasi keamanan OAuth gagal. Silakan coba lagi.';
+        $error = 'Verifikasi keamanan OAuth gagal.';
 
     } elseif (empty($_SESSION['supabase_pkce_verifier'])) {
 
-        $error = 'Sesi OAuth kedaluwarsa. Silakan login kembali.';
+        $error = 'Sesi OAuth kedaluwarsa.';
 
     } else {
 
@@ -79,58 +77,105 @@ if (isset($_GET['code'])) {
                 !empty($verification['data']['id'])
             ) {
 
-                session_regenerate_id(true);
+                $userId = $verification['data']['id'];
 
-                $_SESSION['user_id'] =
-                    $verification['data']['id'];
-
-                $_SESSION['user'] =
-                    $verification['data']['email'] ?? '';
-
-                $_SESSION['access_token'] =
-                    $data['access_token'];
-
-                $_SESSION['refresh_token'] =
-                    $data['refresh_token'] ?? null;
-
-                $_SESSION['token_expires_at'] =
-                    time() + ($data['expires_in'] ?? 3600);
-
-                header(
-                    'Location: ' . BASE_URL .
-                    'index.php?hal=dashboard'
+                // Cari role pengguna
+                $regis = supabase_request(
+                    '/rest/v1/regis?user_id=eq.' .
+                    rawurlencode($userId) .
+                    '&select=nama,email,role',
+                    'GET',
+                    null,
+                    $data['access_token']
                 );
-                exit;
+
+                if (
+                    $regis['status'] === 200 &&
+                    !empty($regis['data'][0]['role'])
+                ) {
+
+                    $role = strtolower(
+                        trim($regis['data'][0]['role'])
+                    );
+
+                    if (in_array(
+                        $role,
+                        ['admin', 'petugas', 'anggota'],
+                        true
+                    )) {
+
+                        session_regenerate_id(true);
+
+                        $_SESSION['user_id'] = $userId;
+                        $_SESSION['user'] =
+                            $verification['data']['email'] ?? '';
+
+                        $_SESSION['nama'] =
+                            $regis['data'][0]['nama'] ?? '';
+
+                        $_SESSION['role'] = $role;
+
+                        $_SESSION['access_token'] =
+                            $data['access_token'];
+
+                        $_SESSION['refresh_token'] =
+                            $data['refresh_token'] ?? null;
+
+                        $_SESSION['token_expires_at'] =
+                            time() + (int) ($data['expires_in'] ?? 3600);
+
+                        if (
+                            $role === 'admin' ||
+                            $role === 'petugas'
+                        ) {
+                            header(
+                                'Location: ' . BASE_URL .
+                                'index.php?hal=dashboard'
+                            );
+                        } else {
+                            header(
+                                'Location: ' . BASE_URL .
+                                'index.php?hal=anggota&aksi=dashboard'
+                            );
+                        }
+
+                        exit;
+
+                    } else {
+                        $error = 'Role pengguna tidak valid.';
+                    }
+
+                } else {
+                    $error = 'Data role Google tidak ditemukan di tabel regis.';
+                }
 
             } else {
-
-                $error = 'Token Google berhasil diterima, tetapi verifikasi pengguna gagal.';
+                $error = 'Verifikasi pengguna Google gagal.';
             }
 
         } else {
-
-            $error = 'Login Google gagal. Periksa konfigurasi Supabase dan coba kembali.';
+            $error = 'Login Google gagal. Silakan coba kembali.';
         }
     }
 }
 
-
 // ========================================
-// JIKA GOOGLE MENGIRIM ERROR
+// ERROR GOOGLE
 // ========================================
 
 if (isset($_GET['error'])) {
-    $error = 'Login Google dibatalkan atau gagal: ' .
+    $error = 'Login Google gagal: ' .
         htmlspecialchars(
-            $_GET['error_description'] ??
-            $_GET['error'],
+            $_GET['error_description'] ?? $_GET['error'],
             ENT_QUOTES,
             'UTF-8'
         );
 }
 
+// ========================================
+// CEK SESSION YANG MASIH AKTIF
+// ========================================
 
-// Jika sudah memiliki JWT, verifikasi dahulu ke Supabase
 if (!empty($_SESSION['access_token'])) {
 
     $verification = supabase_get_user(
@@ -141,18 +186,40 @@ if (!empty($_SESSION['access_token'])) {
         $verification['status'] === 200 &&
         !empty($verification['data']['id'])
     ) {
-        header('Location: ' . BASE_URL . 'index.php?hal=dashboard');
-        exit;
-    }
 
-    $_SESSION = [];
-    session_regenerate_id(true);
+        // Periksa role dari session
+        $role = $_SESSION['role'] ?? '';
+
+        if ($role === 'admin' || $role === 'petugas') {
+            header(
+                'Location: ' . BASE_URL .
+                'index.php?hal=dashboard'
+            );
+            exit;
+        }
+
+        if ($role === 'anggota') {
+            header(
+                'Location: ' . BASE_URL .
+                'index.php?hal=anggota&aksi=dashboard'
+            );
+            exit;
+        }
+
+    } else {
+
+        $_SESSION = [];
+        session_regenerate_id(true);
+    }
 }
 
-// Proses login
+// ========================================
+// PROSES LOGIN EMAIL DAN PASSWORD
+// ========================================
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
-    $email = trim($_POST['email'] ?? '');
+    $email = strtolower(trim($_POST['email'] ?? ''));
     $password = $_POST['password'] ?? '';
 
     if ($email === '' || $password === '') {
@@ -165,6 +232,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     } else {
 
+        // LOGIN SUPABASE
         $result = supabase_login($email, $password);
 
         if (
@@ -174,36 +242,119 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $data = $result['data'];
 
+            // VERIFIKASI USER
             $verification = supabase_get_user(
                 $data['access_token']
             );
 
             if (
-                $verification['status'] === 200 &&
-                !empty($verification['data']['id'])
+                $verification['status'] !== 200 ||
+                empty($verification['data']['id'])
             ) {
 
-                session_regenerate_id(true);
+                $error = 'Verifikasi pengguna gagal.';
 
-                $_SESSION['user_id'] = $verification['data']['id'];
-                $_SESSION['user'] = $verification['data']['email'];
-                $_SESSION['access_token'] = $data['access_token'];
-                $_SESSION['refresh_token'] = $data['refresh_token'] ?? null;
-                $_SESSION['token_expires_at'] = time() + ($data['expires_in'] ?? 3600);
+            } elseif (empty($data['refresh_token'])) {
 
-                header(
-                    'Location: ' . BASE_URL . 'index.php?hal=dashboard'
-                );
-                exit;
+                $error = 'Refresh token tidak ditemukan.';
 
             } else {
 
-                $error = 'Verifikasi JWT gagal. Silakan coba lagi.';
+                $userId = $verification['data']['id'];
+
+                // AMBIL ROLE DARI TABEL REGIS
+                $regis = supabase_request(
+                    '/rest/v1/regis?user_id=eq.' .
+                    rawurlencode($userId) .
+                    '&select=nama,email,role',
+                    'GET',
+                    null,
+                    $data['access_token']
+                );
+
+                if ($regis['status'] !== 200) {
+
+                    $error = 'Gagal mengambil data role. Status: ' .
+                        $regis['status'];
+
+                } elseif (empty($regis['data'][0]['role'])) {
+
+                    $error = 'Data role pengguna tidak ditemukan.';
+
+                } else {
+
+                    $role = strtolower(
+                        trim($regis['data'][0]['role'])
+                    );
+
+                    if (!in_array(
+                        $role,
+                        ['admin', 'petugas', 'anggota'],
+                        true
+                    )) {
+
+                        $error = 'Role pengguna tidak valid.';
+
+                    } else {
+
+                        // SIMPAN SESSION
+                        session_regenerate_id(true);
+
+                        $_SESSION['user_id'] = $userId;
+
+                        $_SESSION['user'] =
+                            $verification['data']['email'] ?? $email;
+
+                        $_SESSION['nama'] =
+                            $regis['data'][0]['nama'] ?? '';
+
+                        $_SESSION['role'] = $role;
+
+                        $_SESSION['access_token'] =
+                            $data['access_token'];
+
+                        $_SESSION['refresh_token'] =
+                            $data['refresh_token'];
+
+                        $_SESSION['token_expires_at'] =
+                            time() + (int) (
+                                $data['expires_in'] ?? 3600
+                            );
+
+                        // ARAHKAN BERDASARKAN ROLE
+                        switch ($role) {
+
+                            case 'admin':
+                            case 'petugas':
+
+                                header(
+                                    'Location: ' .
+                                    BASE_URL .
+                                    'index.php?hal=dashboard'
+                                );
+                                exit;
+
+                            case 'anggota':
+
+                                header(
+                                    'Location: ' .
+                                    BASE_URL .
+                                    'index.php?hal=anggota&aksi=dashboard'
+                                );
+                                exit;
+
+                            default:
+
+                                $error = 'Role tidak dikenali.';
+                        }
+                    }
+                }
             }
 
         } elseif ($result['status'] === 0) {
 
-            $error = 'Tidak dapat terhubung ke Supabase. Periksa koneksi internet.';
+            $error =
+                'Tidak dapat terhubung ke Supabase. Periksa koneksi internet.';
 
         } else {
 
@@ -220,6 +371,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
 
     <meta charset="UTF-8">
+
     <meta name="viewport" content="width=device-width, initial-scale=1">
 
     <title>Login | Perpustakaan Admin</title>
@@ -260,13 +412,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             background: #fff;
             border-radius: 18px;
             overflow: hidden;
-            box-shadow: 0 15px 50px rgba(30, 55, 100, .13);
+            box-shadow: 0 15px 50px rgba(30,55,100,.13);
         }
 
-        /* PANEL KIRI */
-
         .login-left {
-            background: linear-gradient(145deg, #dceaff, #edf5ff);
+            background: linear-gradient(145deg,#dceaff,#edf5ff);
             padding: 45px;
             display: flex;
             flex-direction: column;
@@ -357,8 +507,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             max-width: 340px;
         }
 
-        /* PANEL KANAN */
-
         .login-right {
             padding: 55px 65px;
             display: flex;
@@ -410,6 +558,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             box-shadow: 0 0 0 3px rgba(54,125,240,.12);
         }
 
+        .forgot-password {
+            text-align: right;
+            margin-top: -5px;
+            margin-bottom: 15px;
+        }
+
+        .forgot-password a {
+            color: #1769e8;
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 500;
+        }
+
         .btn-login {
             height: 48px;
             width: 100%;
@@ -419,6 +580,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             color: white;
             font-weight: 600;
             margin-top: 8px;
+            cursor: pointer;
         }
 
         .btn-login:hover {
@@ -476,10 +638,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             font-weight: 600;
         }
 
-        .register-text a:hover {
-            text-decoration: underline;
-        }
-
         @media (max-width: 768px) {
 
             body {
@@ -525,7 +683,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 <div class="login-wrapper">
 
-    <!-- BAGIAN KIRI -->
     <div class="login-left">
 
         <div class="illustration">
@@ -552,7 +709,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     </div>
 
-    <!-- BAGIAN KANAN -->
     <div class="login-right">
 
         <div class="brand-icon">
@@ -568,7 +724,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <?php if ($error !== ''): ?>
 
             <div class="alert alert-danger">
-                <?= htmlspecialchars($error, ENT_QUOTES, 'UTF-8') ?>
+                <?= htmlspecialchars(
+                    $error,
+                    ENT_QUOTES,
+                    'UTF-8'
+                ) ?>
             </div>
 
         <?php endif; ?>
@@ -591,7 +751,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     class="form-control"
                     placeholder="Masukkan email"
                     autocomplete="username"
-                    value="<?= htmlspecialchars($_POST['email'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                    value="<?= htmlspecialchars(
+                        $_POST['email'] ?? '',
+                        ENT_QUOTES,
+                        'UTF-8'
+                    ) ?>"
                     required
                 >
 
@@ -615,11 +779,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             </div>
 
-            <button type="submit" class="btn btn-login">
+            <div class="forgot-password">
 
+                <a href="<?= BASE_URL ?>index.php?hal=forgot_password">
+                    Lupa Password?
+                </a>
+
+            </div>
+
+            <button
+                type="submit"
+                class="btn-login"
+            >
                 <i class="bi bi-box-arrow-in-right me-2"></i>
                 Masuk
-
             </button>
 
         </form>
@@ -630,21 +803,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         <div class="row g-2">
 
-            <div class="col-6">                
-                <a href="<?= BASE_URL ?>index.php?hal=login&aksi=google"
-                class="social-btn">
+            <div class="col-6">
 
+                <a
+                    href="<?= BASE_URL ?>index.php?hal=login&aksi=google"
+                    class="social-btn"
+                >
                     <i class="bi bi-google"></i>
                     Google
-
                 </a>
+
             </div>
 
             <div class="col-6">
-                <a href="<?= BASE_URL ?>github-login.php" class="social-btn">
+
+                <a
+                    href="<?= BASE_URL ?>github-login.php"
+                    class="social-btn"
+                >
                     <i class="bi bi-github"></i>
                     GitHub
                 </a>
+
             </div>
 
         </div>

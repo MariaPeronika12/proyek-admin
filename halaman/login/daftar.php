@@ -1,4 +1,3 @@
-
 <?php
 
 require_once __DIR__ . '/../../env.php';
@@ -14,18 +13,23 @@ $success = '';
 $nama = '';
 $email = '';
 
+
 // ========================================
-// PROSES PENDAFTARAN AKUN
+// PROSES REGISTER PUBLIC
 // ========================================
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     $nama = trim($_POST['nama'] ?? '');
-    $email = trim($_POST['email'] ?? '');
+    $email = strtolower(trim($_POST['email'] ?? ''));
     $password = $_POST['password'] ?? '';
     $konfirmasi = $_POST['konfirmasi_password'] ?? '';
 
-    // Periksa kolom kosong
+
+    // ========================================
+    // VALIDASI FORM
+    // ========================================
+
     if (
         $nama === '' ||
         $email === '' ||
@@ -53,68 +57,189 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     } else {
 
-        // Kirim pendaftaran ke Supabase
-        $result = supabase_signup(
-            $nama,
-            $email,
-            $password
-        );
 
-        // Jika koneksi gagal
-        if ($result['status'] === 0) {
+        // ========================================
+        // 1. CEK EMAIL DI TABEL REGIS
+        // ========================================
 
-            $error = 'Tidak dapat terhubung ke Supabase. Periksa koneksi internet.';
+        $cekRegis = supabase_find_regis_by_email($email);
+
+
+        if ($cekRegis['status'] === 0) {
+
+            $error = 'Tidak dapat terhubung ke database Supabase.';
+
+        } elseif ($cekRegis['status'] !== 200) {
+
+            $error = 'Gagal memeriksa data anggota.';
 
         } else {
 
-            $data = $result['data'] ?? [];
+            $dataRegis = $cekRegis['data'] ?? [];
 
-            // Ambil ID pengguna dari respons Supabase
-            $userId = $data['user']['id']
-                ?? $data['id']
-                ?? null;
 
-            // Jika pendaftaran berhasil
-            if (
-                in_array($result['status'], [200, 201], true) &&
-                !empty($userId)
-            ) {
+            // ========================================
+            // 2. JIKA EMAIL SUDAH ADA DI REGIS
+            // ========================================
 
-                // Jika Supabase meminta konfirmasi email
-                if (
-                    empty($data['session']) &&
-                    empty($data['access_token'])
-                ) {
+            if (!empty($dataRegis)) {
 
-                    $success = 'Pendaftaran berhasil! Silakan periksa email untuk melakukan konfirmasi akun sebelum login.';
+                $anggota = $dataRegis[0];
+
+                $role = $anggota['role'] ?? '';
+
+                $userIdLama = $anggota['user_id'] ?? null;
+
+
+                // Jangan mengizinkan akun admin/petugas
+                // dibuat ulang melalui Register Public
+
+                if ($role !== 'anggota') {
+
+                    $error = 'Email tersebut sudah terdaftar sebagai ' . $role . '. Silakan gunakan halaman login.';
+
+                } elseif (!empty($userIdLama)) {
+
+                    // Sudah mempunyai akun
+
+                    $error = 'Email sudah terdaftar sebagai anggota. Silakan langsung login.';
 
                 } else {
 
-                    $success = 'Pendaftaran berhasil! Akun kamu sudah dibuat. Silakan login.';
+                    // Data anggota sudah ada,
+                    // tetapi belum mempunyai user_id.
+                    //
+                    // Untuk tahap ini kita hentikan dulu
+                    // agar tidak membuat duplikasi.
 
+                    $error = 'Data anggota dengan email tersebut sudah terdaftar. Silakan hubungi petugas untuk mengaktifkan akun.';
                 }
 
-                // Kosongkan password dari form
-                $nama = '';
-                $email = '';
 
             } else {
 
-                // Ambil pesan error dari Supabase
-                $pesan = $data['msg']
-                    ?? $data['message']
-                    ?? $data['error_description']
-                    ?? $data['error']
-                    ?? '';
 
-                if ($pesan !== '') {
+                // ========================================
+                // 3. EMAIL BELUM ADA → BUAT AKUN AUTH
+                // ========================================
 
-                    $error = $pesan;
+                $result = supabase_signup(
+                    $nama,
+                    $email,
+                    $password
+                );
+
+
+                // ========================================
+                // 4. CEK HASIL SIGNUP
+                // ========================================
+
+                if ($result['status'] === 0) {
+
+                    $error = 'Tidak dapat terhubung ke Supabase. Periksa koneksi internet.';
 
                 } else {
 
-                    $error = 'Pendaftaran gagal. Silakan periksa data dan coba lagi.';
+                    $data = $result['data'] ?? [];
 
+
+                    // Ambil user ID dari Supabase Auth
+
+                    $userId = $data['user']['id']
+                        ?? $data['id']
+                        ?? null;
+
+
+                    // ========================================
+                    // 5. AKUN BERHASIL DIBUAT
+                    // ========================================
+
+                    if (
+                        in_array($result['status'], [200, 201], true) &&
+                        !empty($userId)
+                    ) {
+
+
+                        // ========================================
+                        // 6. SIMPAN KE REGIS
+                        // ROLE = ANGGOTA
+                        // ========================================
+
+                        $insertRegis = supabase_insert_regis(
+                            $userId,
+                            $nama,
+                            $email,
+                            'anggota'
+                        );
+
+
+                        if (
+                            $insertRegis['status'] >= 200 &&
+                            $insertRegis['status'] < 300
+                        ) {
+
+
+                            // ========================================
+                            // 7. HASIL REGISTER
+                            // ========================================
+
+                            if (
+                                empty($data['session']) &&
+                                empty($data['access_token'])
+                            ) {
+
+                                $success =
+                                    'Pendaftaran berhasil! Akun kamu sudah dibuat sebagai anggota. Silakan periksa email untuk konfirmasi sebelum login.';
+
+                            } else {
+
+                                $success =
+                                    'Pendaftaran berhasil! Akun kamu sudah dibuat sebagai anggota. Silakan login.';
+                            }
+
+
+                            $nama = '';
+                            $email = '';
+
+                        } else {
+
+                            $insertData = $insertRegis['data'] ?? [];
+
+                            $pesanInsert =
+                                $insertData['message']
+                                ?? $insertData['msg']
+                                ?? '';
+
+                            $error = $pesanInsert !== ''
+                                ? $pesanInsert
+                                : 'Akun berhasil dibuat, tetapi data anggota gagal disimpan.';
+                        }
+
+
+                    } else {
+
+
+                        // ========================================
+                        // 8. ERROR DARI SUPABASE AUTH
+                        // ========================================
+
+                        $pesan =
+                            $data['msg']
+                            ?? $data['message']
+                            ?? $data['error_description']
+                            ?? $data['error']
+                            ?? '';
+
+                        if ($pesan !== '') {
+
+                            $error = $pesan;
+
+                        } else {
+
+                            $error =
+                                'Pendaftaran gagal. Silakan periksa data dan coba lagi.';
+                        }
+                    }
                 }
             }
         }
@@ -130,7 +255,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     <meta charset="UTF-8">
 
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1"
+    >
 
     <title>Daftar Akun | Perpustakaan</title>
 
@@ -241,52 +369,79 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 </head>
 
+
 <body>
 
 <div class="register-card">
 
+
     <!-- JUDUL -->
+
     <div class="text-center mb-4">
 
         <div class="register-icon">
+
             <i class="bi bi-book-half"></i>
+
         </div>
 
         <h3>Buat Akun Baru</h3>
 
         <p class="text-secondary">
-            Daftar untuk menggunakan Perpustakaan Admin.
+            Daftar untuk menggunakan Perpustakaan.
         </p>
 
     </div>
 
+
     <!-- PESAN ERROR -->
+
     <?php if ($error !== ''): ?>
 
         <div class="alert alert-danger">
-            <?= htmlspecialchars($error, ENT_QUOTES, 'UTF-8') ?>
+
+            <?= htmlspecialchars(
+                $error,
+                ENT_QUOTES,
+                'UTF-8'
+            ) ?>
+
         </div>
 
     <?php endif; ?>
 
+
     <!-- PESAN BERHASIL -->
+
     <?php if ($success !== ''): ?>
 
         <div class="alert alert-success">
-            <?= htmlspecialchars($success, ENT_QUOTES, 'UTF-8') ?>
+
+            <?= htmlspecialchars(
+                $success,
+                ENT_QUOTES,
+                'UTF-8'
+            ) ?>
+
         </div>
 
     <?php endif; ?>
 
-    <!-- FORM PENDAFTARAN -->
+
+    <!-- FORM REGISTER -->
+
     <form
         method="POST"
         action="<?= BASE_URL ?>index.php?hal=login&aksi=daftar"
     >
 
+
         <div class="mb-3">
 
-            <label for="nama" class="form-label">
+            <label
+                for="nama"
+                class="form-label"
+            >
                 Nama Lengkap
             </label>
 
@@ -296,16 +451,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 id="nama"
                 class="form-control"
                 placeholder="Masukkan nama lengkap"
-                value="<?= htmlspecialchars($nama, ENT_QUOTES, 'UTF-8') ?>"
+                value="<?= htmlspecialchars(
+                    $nama,
+                    ENT_QUOTES,
+                    'UTF-8'
+                ) ?>"
                 maxlength="100"
                 required
             >
 
         </div>
 
+
         <div class="mb-3">
 
-            <label for="email" class="form-label">
+            <label
+                for="email"
+                class="form-label"
+            >
                 Email
             </label>
 
@@ -315,15 +478,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 id="email"
                 class="form-control"
                 placeholder="Masukkan email"
-                value="<?= htmlspecialchars($email, ENT_QUOTES, 'UTF-8') ?>"
+                value="<?= htmlspecialchars(
+                    $email,
+                    ENT_QUOTES,
+                    'UTF-8'
+                ) ?>"
                 required
             >
 
         </div>
 
+
         <div class="mb-3">
 
-            <label for="password" class="form-label">
+            <label
+                for="password"
+                class="form-label"
+            >
                 Password
             </label>
 
@@ -340,9 +511,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         </div>
 
+
         <div class="mb-4">
 
-            <label for="konfirmasi_password" class="form-label">
+            <label
+                for="konfirmasi_password"
+                class="form-label"
+            >
                 Konfirmasi Password
             </label>
 
@@ -359,19 +534,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         </div>
 
+
         <button
             type="submit"
             class="btn-register"
         >
 
             <i class="bi bi-person-plus me-2"></i>
+
             Daftar Sekarang
 
         </button>
 
     </form>
 
+
     <!-- LINK LOGIN -->
+
     <div class="text-center mt-4">
 
         <span class="text-secondary">
@@ -387,7 +566,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     </div>
 
+
 </div>
 
 </body>
+
 </html>

@@ -3,83 +3,155 @@
 
 require_once __DIR__ . '/supabase.php';
 
-function supabase_request($endpoint, $method = 'GET', $data = null, $accessToken = null)
-{
+// ========================================
+// KONEKSI UTAMA KE SUPABASE
+// ========================================
+
+function supabase_request(
+    $endpoint,
+    $method = 'GET',
+    $data = null,
+    $accessToken = null
+): array {
+
+    if (!function_exists('curl_init')) {
+        return [
+            'status' => 0,
+            'data' => null,
+            'error' => 'Ekstensi PHP cURL belum aktif.'
+        ];
+    }
+
+    if (
+        !defined('SUPABASE_URL') ||
+        !defined('SUPABASE_PUBLISHABLE_KEY') ||
+        empty(SUPABASE_URL) ||
+        empty(SUPABASE_PUBLISHABLE_KEY)
+    ) {
+        return [
+            'status' => 0,
+            'data' => null,
+            'error' => 'Konfigurasi Supabase URL atau Publishable Key belum benar.'
+        ];
+    }
+
     $url = rtrim(SUPABASE_URL, '/') . $endpoint;
 
     $headers = [
         'apikey: ' . SUPABASE_PUBLISHABLE_KEY,
-        'Content-Type: application/json'
+        'Content-Type: application/json',
+        'Accept: application/json'
     ];
 
-    if ($accessToken) {
+    if (!empty($accessToken)) {
         $headers[] = 'Authorization: Bearer ' . $accessToken;
     }
 
-    $ch = curl_init($url);
+    $ch = curl_init();
 
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_CUSTOMREQUEST => $method,
-        CURLOPT_HTTPHEADER => $headers,
-        CURLOPT_CONNECTTIMEOUT => 10,
-        CURLOPT_TIMEOUT => 20
-    ]);
-
-    if ($data !== null) {
-        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+    if ($ch === false) {
+        return [
+            'status' => 0,
+            'data' => null,
+            'error' => 'Gagal membuat koneksi cURL.'
+        ];
     }
 
-    $response = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $options = [
+        CURLOPT_URL => $url,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CUSTOMREQUEST => strtoupper($method),
+        CURLOPT_HTTPHEADER => $headers,
+        CURLOPT_CONNECTTIMEOUT => 20,
+        CURLOPT_TIMEOUT => 45,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
+        CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1
+    ];
 
+    if ($data !== null) {
+        $jsonData = json_encode($data);
+
+        if ($jsonData === false) {
+            curl_close($ch);
+
+            return [
+                'status' => 0,
+                'data' => null,
+                'error' => 'Gagal mengubah data menjadi JSON.'
+            ];
+        }
+
+        $options[CURLOPT_POSTFIELDS] = $jsonData;
+    }
+
+    curl_setopt_array($ch, $options);
+
+    $response = curl_exec($ch);
+
+    $httpCode = curl_getinfo(
+        $ch,
+        CURLINFO_HTTP_CODE
+    );
+
+    // DETAIL ERROR KONEKSI
     if ($response === false) {
         $error = curl_error($ch);
+        $errorNumber = curl_errno($ch);
+
         curl_close($ch);
 
         return [
             'status' => 0,
             'data' => null,
-            'error' => $error
+            'error' => 'cURL Error ' . $errorNumber . ': ' . $error
         ];
     }
 
     curl_close($ch);
 
+    $decoded = json_decode($response, true);
+
     return [
         'status' => $httpCode,
-        'data' => json_decode($response, true),
+        'data' => $decoded,
         'error' => null
     ];
 }
 
+
 // ========================================
-// LOGIN MENGGUNAKAN EMAIL DAN PASSWORD
+// LOGIN EMAIL DAN PASSWORD
 // ========================================
 
-function supabase_login($email, $password)
+function supabase_login($email, $password): array
 {
     return supabase_request(
         '/auth/v1/token?grant_type=password',
         'POST',
         [
-            'email' => $email,
+            'email' => strtolower(trim($email)),
             'password' => $password
         ]
     );
 }
 
+
 // ========================================
-// DAFTAR AKUN BARU KE SUPABASE AUTH
+// REGISTER AKUN SUPABASE
 // ========================================
 
-function supabase_signup($nama, $email, $password)
-{
+function supabase_signup(
+    $nama,
+    $email,
+    $password
+): array {
+
     return supabase_request(
         '/auth/v1/signup',
         'POST',
         [
-            'email' => $email,
+            'email' => strtolower(trim($email)),
             'password' => $password,
             'data' => [
                 'full_name' => $nama
@@ -88,11 +160,12 @@ function supabase_signup($nama, $email, $password)
     );
 }
 
+
 // ========================================
-// MENGAMBIL INFORMASI PENGGUNA BERDASARKAN JWT
+// MENGAMBIL DATA USER
 // ========================================
 
-function supabase_get_user($accessToken)
+function supabase_get_user($accessToken): array
 {
     return supabase_request(
         '/auth/v1/user',
@@ -102,11 +175,12 @@ function supabase_get_user($accessToken)
     );
 }
 
+
 // ========================================
-// MEMPERBARUI ACCESS TOKEN
+// REFRESH ACCESS TOKEN
 // ========================================
 
-function supabase_refresh_token($refreshToken)
+function supabase_refresh_token($refreshToken): array
 {
     return supabase_request(
         '/auth/v1/token?grant_type=refresh_token',
@@ -119,32 +193,78 @@ function supabase_refresh_token($refreshToken)
 
 
 // ========================================
-// GOOGLE OAUTH - MEMBUAT URL LOGIN
+// CEK ANGGOTA BERDASARKAN EMAIL
 // ========================================
 
-function supabase_google_authorize_url(string $redirectTo): string
-{
+function supabase_find_regis_by_email(
+    string $email
+): array {
+
+    $email = strtolower(trim($email));
+
+    $endpoint =
+        '/rest/v1/regis?select=id,user_id,nama,email,role' .
+        '&email=eq.' . rawurlencode($email);
+
+    return supabase_request(
+        $endpoint,
+        'GET'
+    );
+}
+
+
+// ========================================
+// MENYIMPAN DATA ANGGOTA
+// ========================================
+
+function supabase_insert_regis(
+    string $userId,
+    string $nama,
+    string $email,
+    string $role = 'anggota'
+): array {
+
+    return supabase_request(
+        '/rest/v1/regis',
+        'POST',
+        [
+            'user_id' => $userId,
+            'nama' => $nama,
+            'email' => strtolower(trim($email)),
+            'role' => $role
+        ]
+    );
+}
+
+
+// ========================================
+// GOOGLE OAUTH - URL LOGIN
+// ========================================
+
+function supabase_google_authorize_url(
+    string $redirectTo
+): string {
+
     if (session_status() !== PHP_SESSION_ACTIVE) {
         session_start();
     }
 
-    // Membuat PKCE verifier
     $verifier = rtrim(
         strtr(base64_encode(random_bytes(64)), '+/', '-_'),
         '='
     );
 
-    // Membuat PKCE challenge
     $challenge = rtrim(
         strtr(
-            base64_encode(hash('sha256', $verifier, true)),
+            base64_encode(
+                hash('sha256', $verifier, true)
+            ),
             '+/',
             '-_'
         ),
         '='
     );
 
-    // Mencegah CSRF dengan state
     $state = bin2hex(random_bytes(32));
 
     $_SESSION['supabase_pkce_verifier'] = $verifier;
@@ -166,7 +286,7 @@ function supabase_google_authorize_url(string $redirectTo): string
 
 
 // ========================================
-// GOOGLE OAUTH - MENUKAR AUTH CODE
+// GOOGLE OAUTH - EXCHANGE AUTH CODE
 // ========================================
 
 function supabase_google_exchange_code(
@@ -181,5 +301,101 @@ function supabase_google_exchange_code(
             'auth_code' => $authCode,
             'code_verifier' => $verifier
         ]
+    );
+}
+
+
+// ========================================
+// FORGOT PASSWORD - KIRIM EMAIL RECOVERY
+// ========================================
+
+function supabase_forgot_password(
+    string $email,
+    string $redirectTo
+): array {
+
+    return supabase_request(
+        '/auth/v1/recover',
+        'POST',
+        [
+            'email' => strtolower(trim($email)),
+            'redirect_to' => $redirectTo
+        ]
+    );
+}
+
+
+// ========================================
+// KIRIM OTP RECOVERY PASSWORD
+// ========================================
+
+function supabase_send_recovery_otp(
+    string $email,
+    string $redirectTo = ''
+): array {
+
+    return supabase_forgot_password(
+        $email,
+        $redirectTo
+    );
+}
+
+
+// ========================================
+// VERIFIKASI OTP RECOVERY
+// ========================================
+
+function supabase_verify_recovery_otp(
+    string $email,
+    string $otp
+): array {
+
+    return supabase_request(
+        '/auth/v1/verify',
+        'POST',
+        [
+            'email' => strtolower(trim($email)),
+            'token' => trim($otp),
+            'type' => 'recovery'
+        ]
+    );
+}
+
+
+// ========================================
+// KIRIM OTP EMAIL BIASA
+// ========================================
+
+function supabase_send_otp(
+    string $email
+): array {
+
+    return supabase_request(
+        '/auth/v1/otp',
+        'POST',
+        [
+            'email' => strtolower(trim($email)),
+            'create_user' => false
+        ]
+    );
+}
+
+
+// ========================================
+// UPDATE PASSWORD PENGGUNA
+// ========================================
+
+function supabase_update_password(
+    string $accessToken,
+    string $password
+): array {
+
+    return supabase_request(
+        '/auth/v1/user',
+        'PUT',
+        [
+            'password' => $password
+        ],
+        $accessToken
     );
 }
